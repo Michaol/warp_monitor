@@ -3,6 +3,7 @@
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
 MAX_RETRIES=2
+RECONNECT_WAIT_TIME=15
 SCRIPT_PATH=$(realpath "$0")
 LOCK_FILE="/var/run/warp_monitor.lock"
 
@@ -227,8 +228,8 @@ main() {
         for i in $(seq 1 $MAX_RETRIES); do
             log_and_echo "   [重连尝试 $i/$MAX_RETRIES] 正在执行命令: $RECONNECT_CMD"
             $RECONNECT_CMD >> "$LOG_FILE" 2>&1
-            log_and_echo "   等待 15 秒以待网络稳定..."
-            sleep 15
+            log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
+            sleep $RECONNECT_WAIT_TIME
             check_status
             if [[ $needs_reconnect -eq 0 ]]; then
                 log_and_echo "   [成功] 第 $i 次尝试后, 连接已恢复正常且符合配置。"
