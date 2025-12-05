@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1.0.5"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -67,8 +70,14 @@ get_warp_ip_details() {
     local ip_version="$1"
     local extra_curl_opts="$2"
     local trace_info warp_status warp_ip ip_json country asn_org
-    trace_info=$(curl -s -L -${ip_version} ${extra_curl_opts} --retry 2 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace)
-    warp_status=$(echo "$trace_info" | grep -oP '^warp=\K(on|plus)')
+    
+    # 获取 Cloudflare trace 信息，失败时返回 N/A
+    if ! trace_info=$(curl -s -L -${ip_version} ${extra_curl_opts} --retry 2 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null); then
+        echo "N/A"
+        return
+    fi
+    
+    warp_status=$(echo "$trace_info" | grep -oP '^warp=\K(on|plus)' || true)
     if [[ "$warp_status" == "on" || "$warp_status" == "plus" ]]; then
         warp_ip=$(echo "$trace_info" | grep -oP '^ip=\K.*')
         ip_json=$(curl -s -L -${ip_version} ${extra_curl_opts} --retry 2 --max-time 10 "https://ip.forvps.gq/${warp_ip}?lang=zh-CN")
@@ -85,7 +94,8 @@ setup_log_rotation() {
     log_and_echo " 日志管理配置检查:"
     if [ -f "$LOGROTATE_CONF" ]; then
         log_and_echo "   [INFO] Logrotate 配置文件已存在: $LOGROTATE_CONF"
-        local rotate_setting=$(grep -oP '^\s*rotate\s+\K\d+' "$LOGROTATE_CONF" || echo "未知")
+        local rotate_setting
+        rotate_setting=$(grep -oP '^\s*rotate\s+\K\d+' "$LOGROTATE_CONF" 2>/dev/null) || rotate_setting="未知"
         log_and_echo "   - 日志位置: $LOG_FILE"
         log_and_echo "   - 循环设定: 保留 ${rotate_setting} 天的历史日志。"
     else
@@ -166,15 +176,18 @@ check_status() {
         local port=$(ss -nltp | grep -m1 '"wireproxy"' | awk '{print $4}' | awk -F: '{print $NF}')
         if [[ -n "$port" ]]; then extra_opts="--socks5 127.0.0.1:$port"; fi
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"
-    elif wg show warp &> /dev/null; then
+    elif wg show warp >/dev/null 2>&1; then
         if [ -f /etc/wireguard/warp.conf ]; then
-            local ipv4_active=$(grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0' /etc/wireguard/warp.conf)
-            local ipv6_active=$(grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0' /etc/wireguard/warp.conf)
+            # 一次读取配置文件，减少 I/O
+            local warp_conf_content
+            warp_conf_content=$(cat /etc/wireguard/warp.conf 2>/dev/null) || true
+            local ipv4_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0' || echo 0)
+            local ipv6_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0' || echo 0)
             if [[ $ipv4_active -gt 0 && $ipv6_active -gt 0 ]]; then expected_stack="双栈 (Dual-Stack)"; fi
             if [[ $ipv4_active -gt 0 && $ipv6_active -eq 0 ]]; then expected_stack="仅 IPv4 (IPv4-Only)"; fi
             if [[ $ipv4_active -eq 0 && $ipv6_active -gt 0 ]]; then expected_stack="仅 IPv6 (IPv6-Only)"; fi
         fi
-        if grep -q '^Table' /etc/wireguard/warp.conf; then WORK_MODE="非全局"; extra_opts="--interface warp"; else WORK_MODE="全局"; fi
+        if echo "$warp_conf_content" | grep -q '^Table'; then WORK_MODE="非全局"; extra_opts="--interface warp"; else WORK_MODE="全局"; fi
         RECONNECT_CMD="/usr/bin/warp n"
     fi
     if [[ -n "$extra_opts" || "$WORK_MODE" == "全局" ]]; then
@@ -214,7 +227,7 @@ main() {
         log_and_echo "   WARP 网络接口已开启"
         if [[ -n "$WORK_MODE" ]]; then log_and_echo "   工作模式: $WORK_MODE"; fi
     else
-        if wg show warp &> /dev/null; then log_and_echo "   WARP 网络接口已断开"; fi
+        if wg show warp >/dev/null 2>&1; then log_and_echo "   WARP 网络接口已断开"; fi
     fi
     log_and_echo "   Client: $CLIENT_STATUS"; log_and_echo "   WireProxy: $WIREPROXY_STATUS"
     log_and_echo "------------------------------------------------------------------------"
