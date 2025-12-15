@@ -1,6 +1,6 @@
-[![许可证: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2FMichaol%2Fwarp_monitor&label=&icon=github&color=%23198754&message=&style=flat&tz=Asia%2FShanghai)
-
 # WARP 状态监控与自动修复脚本
+
+[![许可证: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2FMichaol%2Fwarp_monitor&label=&icon=github&color=%23198754&message=&style=flat&tz=Asia%2FShanghai)
 
 这是一个为 Linux 服务器全自动监控由 [fscarmen/warp-sh](https://github.com/fscarmen/warp-sh) 脚本安装的 Cloudflare WARP 连接。它不仅能报告详细的连接状态，还能在检测到连接丢失或配置不符时，自动尝试修复。
 
@@ -9,12 +9,12 @@
 - **全自动状态检测**：定期检查 WARP 连接的真实状态，包括 IPv4 和 IPv6 的可用性。
 - **智能模式识别**：自动识别当前 WARP 的工作模式（网络接口、官方客户端、WireProxy），无需任何手动配置。
 - **配置符合性分析**：读取预期配置（单/双栈），并与实际网络状态进行对比，确保连接符合预期。
-- **循环自动修复**：当检测到连接完全丢失，或双栈配置降级为单栈时，会自动触发重连程序，最多尝试10次以恢复连接。
+- **循环自动修复**：当检测到连接完全丢失，或双栈配置降级为单栈时，会自动触发重连程序，最多尝试 10 次以恢复连接。
 - **一键式部署**：
   - **自动配置日志轮替**：首次运行时，自动创建 `logrotate` 配置，防止日志文件无限增长。
-  - **自动配置定时任务**：首次运行时，自动将自身添加到 `crontab`，实现每小时的周期性监控，脚本执行20分钟时限，超时强制终止。
+  - **自动配置定时任务**：首次运行时，自动将自身添加到 `crontab`，实现每小时的周期性监控，脚本执行 20 分钟时限，超时强制终止。
 - **广泛的系统兼容性**：支持 Debian, Ubuntu, CentOS, Fedora, Arch 等主流发行版，并为 Alpine Linux 自动处理依赖。
-- **详细的状态报告**：输出信息包含系统概况、IP地理位置、服务状态和配置分析，日志清晰易读。
+- **详细的状态报告**：输出信息包含系统概况、IP 地理位置、服务状态和配置分析，日志清晰易读。
 
 ## ⚙️ 环境要求
 
@@ -49,8 +49,8 @@ curl -sSL -o /root/warp_monitor.sh "https://raw.githubusercontent.com/Michaol/wa
 你可以通过以下命令来验证：
 
 - **检查定时任务**: `sudo crontab -l`
-- **修改定时任务**: `sudo crontab -e` 修改你需要时执行时间（！！！不要低于默认的20分钟执行时限，而且没有必要过于频密检查！！！） `0 * * * * /root/warp_monitor.sh # WARP_MONITOR_CRON`，脚本不会修改你的自定义执行时间。
-- **查看日志文件**: `less /var/log/warp_monitor.log` 看完`q`退出。 btw：喜欢怎么看都行，cat/tail/grep……，less倒不是每个发行版都有默认安装。
+- **修改定时任务**: `sudo crontab -e` 修改你需要时执行时间（！！！不要低于默认的 20 分钟执行时限，而且没有必要过于频密检查！！！） `0 * * * * /root/warp_monitor.sh # WARP_MONITOR_CRON`，脚本不会修改你的自定义执行时间。
+- **查看日志文件**: `less /var/log/warp_monitor.log` 看完`q`退出。 btw：喜欢怎么看都行，cat/tail/grep……，less 倒不是每个发行版都有默认安装。
 
 之后，脚本将根据定时任务在后台静默运行，守护你的 WARP 连接。
 
@@ -58,7 +58,7 @@ curl -sSL -o /root/warp_monitor.sh "https://raw.githubusercontent.com/Michaol/wa
 
 每次执行时，脚本会生成如下格式的详细报告：
 
-```
+```text
 ========================================================================
  WARP Status Report & Auto-Heal
 ------------------------------------------------------------------------
