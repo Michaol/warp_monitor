@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.5"
+VERSION="1.0.6"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -69,18 +69,36 @@ log_and_echo() {
 get_warp_ip_details() {
     local ip_version="$1"
     local extra_curl_opts="$2"
-    local trace_info warp_status warp_ip ip_json country asn_org
+    local ip_json warp_status warp_ip country asn_org
     
-    # 获取 Cloudflare trace 信息，失败时返回 N/A
-    if ! trace_info=$(curl -s -L -${ip_version} ${extra_curl_opts} --retry 2 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null); then
-        echo "N/A"
-        return
+    # 使用上游自建 IP API (v3.2.0)，一次请求获取 WARP 状态、IP、国家和 ISP
+    if grep -q 'socks5' <<< "$extra_curl_opts" 2>/dev/null; then
+        # SOCKS5 代理模式：先获取 IP，再查询详情
+        warp_ip=$(curl -s -A a --retry 2 $extra_curl_opts https://api-ipv${ip_version}.ip.sb/ip 2>/dev/null)
+        if [[ -z "$warp_ip" ]]; then
+            echo "N/A"
+            return
+        fi
+        ip_json=$(curl -s --retry 2 --max-time 10 "https://ip.cloudflare.nyc.mn/${warp_ip}?lang=zh-CN" 2>/dev/null)
+        # 检查是否为 Cloudflare IP
+        if echo "$ip_json" | grep -qi '"isp".*Cloudflare'; then
+            warp_status="on"
+        else
+            echo "N/A"
+            return
+        fi
+    else
+        # 直连或 --interface 模式
+        ip_json=$(curl -s --retry 2 --max-time 10 $extra_curl_opts -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
+        if [[ -z "$ip_json" ]]; then
+            echo "N/A"
+            return
+        fi
+        warp_status=$(echo "$ip_json" | sed -n 's/.*"warp":[ ]*"\([^"]*\)".*/\1/p')
+        warp_ip=$(echo "$ip_json" | sed -n 's/.*"ip":[ ]*"\([^"]*\)".*/\1/p')
     fi
     
-    warp_status=$(echo "$trace_info" | grep -oP '^warp=\K(on|plus)' || true)
     if [[ "$warp_status" == "on" || "$warp_status" == "plus" ]]; then
-        warp_ip=$(echo "$trace_info" | grep -oP '^ip=\K.*')
-        ip_json=$(curl -s -L -${ip_version} ${extra_curl_opts} --retry 2 --max-time 10 "https://ip.forvps.gq/${warp_ip}?lang=zh-CN")
         country=$(echo "$ip_json" | sed -n 's/.*"country":[ ]*"\([^"]*\)".*/\1/p')
         asn_org=$(echo "$ip_json" | sed -n 's/.*"isp":[ ]*"\([^"]*\)".*/\1/p')
         echo "$warp_ip $country $asn_org"
