@@ -230,7 +230,7 @@ main() {
     declare RECONNECT_CMD needs_reconnect
     echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
     log_and_echo "========================================================================"
-    log_and_echo " WARP Status Report & Auto-Heal"
+    log_and_echo " WARP Status Report & Auto-Heal  v${VERSION}"
     setup_log_rotation
     setup_cron_job
     check_status
