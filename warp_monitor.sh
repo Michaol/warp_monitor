@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.6"
+VERSION="1.1.0"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
 MAX_RETRIES=2
 RECONNECT_WAIT_TIME=15
+HARD_RECONNECT_DELAY=3
 SCRIPT_PATH=$(realpath "$0")
 LOCK_FILE="/var/run/warp_monitor.lock"
 
@@ -224,6 +225,43 @@ check_status() {
     fi
 }
 
+# ============================================================
+# 重连函数（支持 fallback）
+# ============================================================
+
+attempt_reconnect() {
+    local method="$1"
+    local cmd="$2"
+    local cmd_status=0
+    
+    case "$method" in
+        "soft")
+            log_and_echo "   [重连方法] 软重连 (warp n)"
+            log_and_echo "   [执行命令] $cmd"
+            $cmd >> "$LOG_FILE" 2>&1
+            cmd_status=$?
+            ;;
+        "hard")
+            log_and_echo "   [重连方法] 硬重连 (warp o - 关闭接口)"
+            log_and_echo "   [执行命令] $cmd"
+            $cmd >> "$LOG_FILE" 2>&1
+            local close_status=$?
+            if [[ $close_status -eq 0 ]]; then
+                log_and_echo "   [状态] 接口已关闭，等待 ${HARD_RECONNECT_DELAY} 秒..."
+                sleep $HARD_RECONNECT_DELAY
+                log_and_echo "   [重连方法] 硬重连 (warp o - 开启接口)"
+                log_and_echo "   [执行命令] $cmd"
+                $cmd >> "$LOG_FILE" 2>&1
+                cmd_status=$?
+            else
+                log_and_echo "   [警告] 关闭接口返回非零状态: $close_status"
+                cmd_status=$close_status
+            fi
+            ;;
+    esac
+    return $cmd_status
+}
+
 main() {
     declare os_info kernel_info arch_info virt_info IPV4 IPV6
     declare expected_stack actual_stack conformity_status WORK_MODE CLIENT_STATUS WIREPROXY_STATUS
@@ -256,24 +294,56 @@ main() {
     log_and_echo "========================================================================"
     if [[ $needs_reconnect -eq 1 && -n "$RECONNECT_CMD" ]]; then
         log_and_echo " 最终诊断: 连接异常或配置不符。启动自动重连程序..."
+        
+        # -------------------- 阶段 1: 软重连 (warp n) --------------------
+        log_and_echo "------------------------------------------------------------------------"
+        log_and_echo " [阶段 1/2] 尝试软重连 (warp n)..."
+        local soft_success=0
         for i in $(seq 1 $MAX_RETRIES); do
-            log_and_echo "   [重连尝试 $i/$MAX_RETRIES] 正在执行命令: $RECONNECT_CMD"
-            $RECONNECT_CMD >> "$LOG_FILE" 2>&1
+            log_and_echo "   [尝试 $i/$MAX_RETRIES]"
+            attempt_reconnect "soft" "$RECONNECT_CMD"
             log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
             sleep $RECONNECT_WAIT_TIME
             check_status
             if [[ $needs_reconnect -eq 0 ]]; then
-                log_and_echo "   [成功] 第 $i 次尝试后, 连接已恢复正常且符合配置。"
+                log_and_echo "   [成功] 软重连成功，连接已恢复正常。"
                 log_and_echo "   - 当前 IPv4: $IPV4"
                 log_and_echo "   - 当前 IPv6: $IPV6"
+                soft_success=1
                 break
             else
-                log_and_echo "   [失败] 第 $i 次尝试后, 连接状态仍不符合预期 ($conformity_status)。"
-            fi
-            if [[ $i -eq $MAX_RETRIES ]]; then
-                log_and_echo " 最终诊断: 自动重连失败。在尝试 $MAX_RETRIES 次后，连接仍未恢复。"
+                log_and_echo "   [失败] 软重连后状态仍不符合预期 ($conformity_status)。"
             fi
         done
+        
+        # -------------------- 阶段 2: 硬重连 Fallback (warp o) --------------------
+        if [[ $soft_success -eq 0 ]]; then
+            log_and_echo "------------------------------------------------------------------------"
+            log_and_echo " [阶段 2/2] 软重连失败，Fallback 到硬重连 (warp o)..."
+            
+            # 将重连命令末尾的 n 改为 o（避免误伤路径中的 n）
+            local HARD_RECONNECT_CMD="${RECONNECT_CMD% n} o"
+            
+            for i in $(seq 1 $MAX_RETRIES); do
+                log_and_echo "   [尝试 $i/$MAX_RETRIES]"
+                attempt_reconnect "hard" "$HARD_RECONNECT_CMD"
+                log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
+                sleep $RECONNECT_WAIT_TIME
+                check_status
+                if [[ $needs_reconnect -eq 0 ]]; then
+                    log_and_echo "   [成功] 硬重连成功，连接已恢复正常。"
+                    log_and_echo "   - 当前 IPv4: $IPV4"
+                    log_and_echo "   - 当前 IPv6: $IPV6"
+                    break
+                else
+                    log_and_echo "   [失败] 硬重连后状态仍不符合预期 ($conformity_status)。"
+                fi
+                if [[ $i -eq $MAX_RETRIES ]]; then
+                    log_and_echo " 最终诊断: 所有重连尝试均失败 (软重连 $MAX_RETRIES 次 + 硬重连 $MAX_RETRIES 次)。"
+                    log_and_echo " 建议: 请手动检查 WARP 服务状态或网络连接。"
+                fi
+            done
+        fi
     else
         log_and_echo " 最终诊断: 连接正常且符合配置。"
     fi
