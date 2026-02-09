@@ -1,0 +1,10 @@
+# Development files
+.agent/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
