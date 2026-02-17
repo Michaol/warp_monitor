@@ -6,6 +6,13 @@
 
 ## 📝 更新日志
 
+### v1.1.1 (2026-02-17)
+
+**紧急修复**：跟随上游 [fscarmen/warp-sh#253](https://github.com/fscarmen/warp-sh/issues/253) 修复
+
+- **IP API 域名迁移**：`ip.cloudflare.nyc.mn` DNS 解析已失效，替换为上游新域名 `ip.cloudflare.now.cc`
+- **更新脚本**：请再次执行下面的 `wget` 或 `curl` 完整命令更新到最新版本
+
 ### v1.1.0 (2026-02-09)
 
 **重连策略改进**：解决 `warp n` 有时无法有效重新获取 WARP IP 的问题
