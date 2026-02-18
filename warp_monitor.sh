@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -196,12 +196,14 @@ check_status() {
         if [[ -n "$port" ]]; then extra_opts="--socks5 127.0.0.1:$port"; fi
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"
     elif wg show warp >/dev/null 2>&1; then
+        local warp_conf_content=""
         if [ -f /etc/wireguard/warp.conf ]; then
             # 一次读取配置文件，减少 I/O
-            local warp_conf_content
             warp_conf_content=$(cat /etc/wireguard/warp.conf 2>/dev/null) || true
-            local ipv4_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0' || echo 0)
-            local ipv6_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0' || echo 0)
+            local ipv4_active=0
+            ipv4_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0') || true
+            local ipv6_active=0
+            ipv6_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0') || true
             if [[ $ipv4_active -gt 0 && $ipv6_active -gt 0 ]]; then expected_stack="双栈 (Dual-Stack)"; fi
             if [[ $ipv4_active -gt 0 && $ipv6_active -eq 0 ]]; then expected_stack="仅 IPv4 (IPv4-Only)"; fi
             if [[ $ipv4_active -eq 0 && $ipv6_active -gt 0 ]]; then expected_stack="仅 IPv6 (IPv6-Only)"; fi
@@ -232,6 +234,7 @@ check_status() {
 attempt_reconnect() {
     local method="$1"
     local cmd="$2"
+    local is_connected="${3:-0}"  # 当前接口是否存活 (1=是, 0=否)
     local cmd_status=0
     
     case "$method" in
@@ -242,21 +245,25 @@ attempt_reconnect() {
             cmd_status=$?
             ;;
         "hard")
-            log_and_echo "   [重连方法] 硬重连 (warp o - 关闭接口)"
-            log_and_echo "   [执行命令] $cmd"
-            $cmd >> "$LOG_FILE" 2>&1
-            local close_status=$?
-            if [[ $close_status -eq 0 ]]; then
-                log_and_echo "   [状态] 接口已关闭，等待 ${HARD_RECONNECT_DELAY} 秒..."
-                sleep $HARD_RECONNECT_DELAY
-                log_and_echo "   [重连方法] 硬重连 (warp o - 开启接口)"
-                log_and_echo "   [执行命令] $cmd"
+            if [[ "$is_connected" -eq 1 ]]; then
+                # 接口存活但 IP 异常 → 先关闭再开启
+                log_and_echo "   [重连方法] 硬重连 (warp o - 先关闭再开启)"
+                log_and_echo "   [执行命令] $cmd (关闭)"
                 $cmd >> "$LOG_FILE" 2>&1
-                cmd_status=$?
+                local close_status=$?
+                if [[ $close_status -eq 0 ]]; then
+                    log_and_echo "   [状态] 接口已关闭，等待 ${HARD_RECONNECT_DELAY} 秒..."
+                    sleep $HARD_RECONNECT_DELAY
+                else
+                    log_and_echo "   [警告] 关闭接口返回非零状态: $close_status"
+                fi
             else
-                log_and_echo "   [警告] 关闭接口返回非零状态: $close_status"
-                cmd_status=$close_status
+                log_and_echo "   [重连方法] 硬重连 (warp o - 接口已断开，直接开启)"
             fi
+            # 统一执行开启
+            log_and_echo "   [执行命令] $cmd (开启)"
+            $cmd >> "$LOG_FILE" 2>&1
+            cmd_status=$?
             ;;
     esac
     return $cmd_status
@@ -321,12 +328,15 @@ main() {
             log_and_echo "------------------------------------------------------------------------"
             log_and_echo " [阶段 2/2] 软重连失败，Fallback 到硬重连 (warp o)..."
             
-            # 将重连命令末尾的 n 改为 o（避免误伤路径中的 n）
-            local HARD_RECONNECT_CMD="${RECONNECT_CMD% n} o"
+            # 将重连命令末尾的参数 (n/r/y) 改为 o
+            local HARD_RECONNECT_CMD="${RECONNECT_CMD% [nry]} o"
             
             for i in $(seq 1 $MAX_RETRIES); do
                 log_and_echo "   [尝试 $i/$MAX_RETRIES]"
-                attempt_reconnect "hard" "$HARD_RECONNECT_CMD"
+                # 判断 wg 接口当前是否存活
+                local wg_alive=0
+                if wg show warp >/dev/null 2>&1; then wg_alive=1; fi
+                attempt_reconnect "hard" "$HARD_RECONNECT_CMD" "$wg_alive"
                 log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
                 sleep $RECONNECT_WAIT_TIME
                 check_status
@@ -344,6 +354,9 @@ main() {
                 fi
             done
         fi
+    elif [[ $needs_reconnect -eq 1 ]]; then
+        log_and_echo " 最终诊断: 连接异常，但未检测到已安装的 WARP 服务，无法执行自动重连。"
+        log_and_echo " 建议: 请先安装 WARP (warp-cli / wireproxy / wg-quick) 后再运行此脚本。"
     else
         log_and_echo " 最终诊断: 连接正常且符合配置。"
     fi
