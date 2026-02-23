@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -80,7 +80,7 @@ get_warp_ip_details() {
             echo "N/A"
             return
         fi
-        ip_json=$(curl -s --retry 2 --max-time 10 "https://ip.cloudflare.now.cc/${warp_ip}?lang=zh-CN" 2>/dev/null)
+        ip_json=$(curl -s --retry 2 --max-time 10 "https://ip.cloudflare.nyc.mn/${warp_ip}?lang=zh-CN" 2>/dev/null)
         # 检查是否为 Cloudflare IP
         if echo "$ip_json" | grep -qi '"isp".*Cloudflare'; then
             warp_status="on"
@@ -90,7 +90,7 @@ get_warp_ip_details() {
         fi
     else
         # 直连或 --interface 模式
-        ip_json=$(curl -s --retry 2 --max-time 10 $extra_curl_opts -${ip_version} "https://ip.cloudflare.now.cc?lang=zh-CN" 2>/dev/null)
+        ip_json=$(curl -s --retry 2 --max-time 10 $extra_curl_opts -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
         if [[ -z "$ip_json" ]]; then
             echo "N/A"
             return

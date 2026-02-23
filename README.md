@@ -6,6 +6,15 @@
 
 ## 📝 更新日志
 
+### v1.2.1 (2026-02-23)
+
+跟随上游 fscarmen/warp v3.2.1 更新：
+
+- **IP API 域名切回**：上游将 `ip.cloudflare.now.cc` 切回 `ip.cloudflare.nyc.mn`，同步跟进
+
+<details>
+<summary>历史版本</summary>
+
 ### v1.2.0 (2026-02-18)
 
 **诊断逻辑修复与重连策略优化**
@@ -38,6 +47,8 @@
 - **IP API 升级**：切换至 fscarmen 自建 API，提升 IP 信息获取速度和稳定性
 - **性能优化**：直连模式下减少一次 HTTP 请求，原先需分别请求 trace 和 IP 详情，现一次请求即可获取 WARP 状态、IP、国家和 ISP
 - **更新脚本**：若需更新到最新版本，请再次执行下面的 `wget` 或 `curl` 完整命令
+
+</details>
 
 ## ✨ 主要功能
 
