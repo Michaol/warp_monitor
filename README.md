@@ -6,14 +6,22 @@
 
 ## 📝 更新日志
 
+### v1.2.2 (2026-03-23)
+
+**代码质量与功能增强**
+
+- **修复变量引用风险**：`curl` 命令中的参数变量添加引号，避免分词导致的异常
+- **改进 JSON 解析**：使用 `awk` 替代 `sed` 解析 API 返回的 JSON，与上游代码风格保持一致
+- **添加配置文件支持**：支持通过 `/etc/warp_monitor.conf` 自定义参数（日志路径、重试次数等）
+- **添加命令行参数**：支持 `-h/--help`、`-v/--version`、`-c/--config` 参数
+- **优化错误处理**：改进 `set -u` 模式下的变量未定义处理
+- **性能优化**：IPv4/IPv6 检测改为并行执行，提升检测速度
+
 ### v1.2.1 (2026-02-23)
 
 跟随上游 fscarmen/warp v3.2.1 更新：
 
 - **IP API 域名切回**：上游将 `ip.cloudflare.now.cc` 切回 `ip.cloudflare.nyc.mn`，同步跟进
-
-<details>
-<summary>历史版本</summary>
 
 ### v1.2.0 (2026-02-18)
 
@@ -100,6 +108,55 @@ curl -sSL -o /root/warp_monitor.sh "https://raw.githubusercontent.com/Michaol/wa
 
 之后，脚本将根据定时任务在后台静默运行，守护你的 WARP 连接。
 
+### 命令行参数
+
+脚本支持以下命令行参数：
+
+```bash
+# 显示帮助信息
+/root/warp_monitor.sh -h
+
+# 显示版本信息
+/root/warp_monitor.sh -v
+
+# 使用自定义配置文件
+/root/warp_monitor.sh -c /path/to/config.conf
+```
+
+### 配置文件
+
+脚本支持通过配置文件自定义参数，默认配置文件路径为 `/etc/warp_monitor.conf`。
+
+**创建配置文件**：
+
+```bash
+cat > /etc/warp_monitor.conf << 'EOF'
+# WARP Monitor 配置文件
+# 取消注释并修改需要自定义的参数
+
+# 日志文件路径
+# LOG_FILE="/var/log/warp_monitor.log"
+
+# 最大重试次数
+# MAX_RETRIES=2
+
+# 重连等待时间（秒）
+# RECONNECT_WAIT_TIME=15
+
+# 硬重连延迟（秒）
+# HARD_RECONNECT_DELAY=3
+EOF
+```
+
+**配置文件参数说明**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `LOG_FILE` | `/var/log/warp_monitor.log` | 日志文件路径 |
+| `MAX_RETRIES` | `2` | 每个阶段的最大重试次数 |
+| `RECONNECT_WAIT_TIME` | `15` | 重连后等待网络稳定的时间（秒） |
+| `HARD_RECONNECT_DELAY` | `3` | 硬重连时关闭接口后的延迟（秒） |
+
 ## 📊 输出示例
 
 每次执行时，脚本会生成如下格式的详细报告：
@@ -153,6 +210,9 @@ rm -f /root/warp_monitor.sh
 # 3. 删除 logrotate 配置
 rm -f /etc/logrotate.d/warp_monitor
 
-# 4. (可选) 删除日志文件
+# 4. (可选) 删除配置文件
+rm -f /etc/warp_monitor.conf
+
+# 5. (可选) 删除日志文件
 rm -f /var/log/warp_monitor.log*
 ```

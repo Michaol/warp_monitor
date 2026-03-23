@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -10,6 +10,58 @@ RECONNECT_WAIT_TIME=15
 HARD_RECONNECT_DELAY=3
 SCRIPT_PATH=$(realpath "$0")
 LOCK_FILE="/var/run/warp_monitor.lock"
+
+# 配置文件支持
+CONFIG_FILE="${CONFIG_FILE:-/etc/warp_monitor.conf}"
+
+# 命令行参数解析
+show_help() {
+    echo "WARP 状态监控与自动修复脚本 v${VERSION}"
+    echo ""
+    echo "用法: $0 [选项]"
+    echo ""
+    echo "选项:"
+    echo "  -c, --config FILE  指定配置文件 (默认: /etc/warp_monitor.conf)"
+    echo "  -v, --version      显示版本信息"
+    echo "  -h, --help         显示此帮助信息"
+    echo ""
+    echo "示例:"
+    echo "  $0                          # 使用默认配置运行"
+    echo "  $0 -c /path/to/config.conf  # 使用自定义配置文件"
+    echo ""
+}
+
+show_version() {
+    echo "WARP Monitor v${VERSION}"
+    echo "上游依赖: fscarmen/warp-sh v3.2.2"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--config)
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
+        -v|--version)
+            show_version
+            exit 0
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "未知选项: $1"
+            echo "使用 -h 或 --help 查看帮助"
+            exit 1
+            ;;
+    esac
+done
+
+# 加载配置文件
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
    echo "错误: 此脚本必须以 root 权限运行才能管理 logrotate 和 crontab。"
@@ -75,7 +127,7 @@ get_warp_ip_details() {
     # 使用上游自建 IP API (v3.2.0)，一次请求获取 WARP 状态、IP、国家和 ISP
     if grep -q 'socks5' <<< "$extra_curl_opts" 2>/dev/null; then
         # SOCKS5 代理模式：先获取 IP，再查询详情
-        warp_ip=$(curl -s -A a --retry 2 $extra_curl_opts https://api-ipv${ip_version}.ip.sb/ip 2>/dev/null)
+        warp_ip=$(curl -s -A a --retry 2 "$extra_curl_opts" "https://api-ipv${ip_version}.ip.sb/ip" 2>/dev/null)
         if [[ -z "$warp_ip" ]]; then
             echo "N/A"
             return
@@ -90,18 +142,18 @@ get_warp_ip_details() {
         fi
     else
         # 直连或 --interface 模式
-        ip_json=$(curl -s --retry 2 --max-time 10 $extra_curl_opts -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
+        ip_json=$(curl -s --retry 2 --max-time 10 "$extra_curl_opts" -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
         if [[ -z "$ip_json" ]]; then
             echo "N/A"
             return
         fi
-        warp_status=$(echo "$ip_json" | sed -n 's/.*"warp":[ ]*"\([^"]*\)".*/\1/p')
-        warp_ip=$(echo "$ip_json" | sed -n 's/.*"ip":[ ]*"\([^"]*\)".*/\1/p')
+        warp_status=$(awk -F '"' '/"warp"/{print $4}' <<< "$ip_json")
+        warp_ip=$(awk -F '"' '/"ip"/{print $4}' <<< "$ip_json")
     fi
     
     if [[ "$warp_status" == "on" || "$warp_status" == "plus" ]]; then
-        country=$(echo "$ip_json" | sed -n 's/.*"country":[ ]*"\([^"]*\)".*/\1/p')
-        asn_org=$(echo "$ip_json" | sed -n 's/.*"isp":[ ]*"\([^"]*\)".*/\1/p')
+        country=$(awk -F '"' '/"country"/{print $4}' <<< "$ip_json")
+        asn_org=$(awk -F '"' '/"isp"/{print $4}' <<< "$ip_json")
         echo "$warp_ip $country $asn_org"
     else
         echo "N/A"
@@ -199,11 +251,11 @@ check_status() {
         local warp_conf_content=""
         if [ -f /etc/wireguard/warp.conf ]; then
             # 一次读取配置文件，减少 I/O
-            warp_conf_content=$(cat /etc/wireguard/warp.conf 2>/dev/null) || true
+            warp_conf_content=$(cat /etc/wireguard/warp.conf 2>/dev/null) || warp_conf_content=""
             local ipv4_active=0
-            ipv4_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0') || true
+            ipv4_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*0.0.0.0/0') || ipv4_active=0
             local ipv6_active=0
-            ipv6_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0') || true
+            ipv6_active=$(echo "$warp_conf_content" | grep -c '^[[:space:]]*AllowedIPs[[:space:]]*=[[:space:]]*::/0') || ipv6_active=0
             if [[ $ipv4_active -gt 0 && $ipv6_active -gt 0 ]]; then expected_stack="双栈 (Dual-Stack)"; fi
             if [[ $ipv4_active -gt 0 && $ipv6_active -eq 0 ]]; then expected_stack="仅 IPv4 (IPv4-Only)"; fi
             if [[ $ipv4_active -eq 0 && $ipv6_active -gt 0 ]]; then expected_stack="仅 IPv6 (IPv6-Only)"; fi
@@ -212,7 +264,13 @@ check_status() {
         RECONNECT_CMD="/usr/bin/warp n"
     fi
     if [[ -n "$extra_opts" || "$WORK_MODE" == "全局" ]]; then
-        IPV4=$(get_warp_ip_details 4 "$extra_opts"); IPV6=$(get_warp_ip_details 6 "$extra_opts")
+        # 并行获取 IPv4 和 IPv6 信息
+        get_warp_ip_details 4 "$extra_opts" > /tmp/warp_ipv4.tmp &
+        get_warp_ip_details 6 "$extra_opts" > /tmp/warp_ipv6.tmp &
+        wait
+        IPV4=$(cat /tmp/warp_ipv4.tmp 2>/dev/null || echo "N/A")
+        IPV6=$(cat /tmp/warp_ipv6.tmp 2>/dev/null || echo "N/A")
+        rm -f /tmp/warp_ipv4.tmp /tmp/warp_ipv6.tmp
     fi
     if [[ "$IPV4" != "N/A" && "$IPV6" != "N/A" ]]; then actual_stack="双栈 (Dual-Stack)"; fi
     if [[ "$IPV4" != "N/A" && "$IPV6" == "N/A" ]]; then actual_stack="仅 IPv4 (IPv4-Only)"; fi
