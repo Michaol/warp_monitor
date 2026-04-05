@@ -29,11 +29,13 @@ show_help() {
     echo "  $0                          # 使用默认配置运行"
     echo "  $0 -c /path/to/config.conf  # 使用自定义配置文件"
     echo ""
+    return
 }
 
 show_version() {
     echo "WARP Monitor v${VERSION}"
     echo "上游依赖: fscarmen/warp-sh v3.2.2"
+    return
 }
 
 while [[ $# -gt 0 ]]; do
@@ -51,20 +53,20 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "未知选项: $1"
-            echo "使用 -h 或 --help 查看帮助"
+            echo "未知选项: $1" >&2
+            echo "使用 -h 或 --help 查看帮助" >&2
             exit 1
             ;;
     esac
 done
 
 # 加载配置文件
-if [ -f "$CONFIG_FILE" ]; then
+if [[ -f "$CONFIG_FILE" ]]; then
     source "$CONFIG_FILE"
 fi
 
-if [ "$(id -u)" -ne 0 ]; then
-   echo "错误: 此脚本必须以 root 权限运行才能管理 logrotate 和 crontab。"
+if [[ "$(id -u)" -ne 0 ]]; then
+   echo "错误: 此脚本必须以 root 权限运行才能管理 logrotate 和 crontab。" >&2
    exit 1
 fi
 
@@ -83,33 +85,33 @@ if ! command -v flock >/dev/null 2>&1; then
     elif command -v apk >/dev/null; then
         INSTALL_CMD="apk add util-linux"
     fi
-    if [ -n "$INSTALL_CMD" ]; then
+    if [[ -n "$INSTALL_CMD" ]]; then
         $INSTALL_CMD >/dev/null 2>&1
         if ! command -v flock >/dev/null 2>&1; then
-            echo "[ERROR] 自动安装 util-linux (flock) 失败, 脚本无法保证安全运行, 即将退出。" | tee -a "$LOG_FILE"
+            echo "[ERROR] 自动安装 util-linux (flock) 失败, 脚本无法保证安全运行, 即将退出。" | tee -a "$LOG_FILE" >&2
             exit 1
         else
             echo "[SUCCESS] 成功安装 util-linux, flock 命令已可用。" | tee -a "$LOG_FILE"
         fi
     else
-        echo "[ERROR] 未知的包管理器, 无法自动安装 util-linux。脚本无法保证安全运行, 即将退出。" | tee -a "$LOG_FILE"
+        echo "[ERROR] 未知的包管理器, 无法自动安装 util-linux。脚本无法保证安全运行, 即将退出。" | tee -a "$LOG_FILE" >&2
         exit 1
     fi
 fi
 
-if [ -f /etc/alpine-release ]; then
+if [[ -f /etc/alpine-release ]]; then
     if ! echo "test" | grep -P "test" > /dev/null 2>&1; then
         echo "[INFO] 检测到 Alpine Linux 且缺少 GNU grep, 正在尝试自动安装..." | tee -a "$LOG_FILE"
         if command -v apk > /dev/null; then
             apk update && apk add grep
-            if ! echo "test" | grep -P "test" > /dev/null 2>&1; then
-                echo "[ERROR] 自动安装 GNU grep 失败, 脚本无法继续。请手动执行 'apk add grep'。" | tee -a "$LOG_FILE"
+            if [[ -z $(echo "test" | grep -P "test" 2>/dev/null) ]]; then
+                echo "[ERROR] 自动安装 GNU grep 失败, 脚本无法继续。请手动执行 'apk add grep'。" | tee -a "$LOG_FILE" >&2
                 exit 1
             else
                 echo "[SUCCESS] 成功安装 GNU grep。" | tee -a "$LOG_FILE"
             fi
         else
-            echo "[ERROR] 在 Alpine 系统上未找到 'apk' 命令, 无法安装依赖。" | tee -a "$LOG_FILE"
+            echo "[ERROR] 在 Alpine 系统上未找到 'apk' 命令, 无法安装依赖。" | tee -a "$LOG_FILE" >&2
             exit 1
         fi
     fi
@@ -163,7 +165,7 @@ get_warp_ip_details() {
 setup_log_rotation() {
     log_and_echo "------------------------------------------------------------------------"
     log_and_echo " 日志管理配置检查:"
-    if [ -f "$LOGROTATE_CONF" ]; then
+    if [[ -f "$LOGROTATE_CONF" ]]; then
         log_and_echo "   [INFO] Logrotate 配置文件已存在: $LOGROTATE_CONF"
         local rotate_setting
         rotate_setting=$(grep -oP '^\s*rotate\s+\K\d+' "$LOGROTATE_CONF" 2>/dev/null) || rotate_setting="未知"
@@ -183,7 +185,7 @@ setup_log_rotation() {
     create 0644 root root
 }
 EOF
-        if [ $? -eq 0 ]; then log_and_echo "   [SUCCESS] 成功创建配置文件。"; else log_and_echo "   [ERROR] 创建配置文件失败, 请检查权限。"; fi
+        if [[ $? -eq 0 ]]; then log_and_echo "   [SUCCESS] 成功创建配置文件。"; else log_and_echo "   [ERROR] 创建配置文件失败, 请检查权限。"; fi
     fi
 }
 
@@ -213,12 +215,13 @@ setup_cron_job() {
     else
         log_and_echo "   [INFO] 定时监控任务不存在, 正在添加..."
         (crontab -l 2>/dev/null; echo "$cron_job") | crontab -
-        if [ $? -eq 0 ]; then
+        if [[ $? -eq 0 ]]; then
             log_and_echo "   [SUCCESS] 成功添加定时任务 (带20分钟超时保护), 脚本将每小时自动运行。"
         else
             log_and_echo "   [ERROR] 添加定时任务失败。"
         fi
     fi
+    return
 }
 
 check_status() {
@@ -229,12 +232,12 @@ check_status() {
     virt_info=$(systemd-detect-virt 2>/dev/null || echo "N/A")
     IPV4="N/A"; IPV6="N/A"; extra_opts=""; expected_stack="-"; actual_stack="已断开 (Disconnected)";
     WORK_MODE=""; CLIENT_STATUS=""; WIREPROXY_STATUS=""; RECONNECT_CMD=""; needs_reconnect=0;
-    if [ -x "$(type -p warp-cli)" ]; then
+    if [[ -x "$(type -p warp-cli)" ]]; then
         if pgrep -x "warp-svc" > /dev/null; then CLIENT_STATUS="运行中"; else CLIENT_STATUS="已安装但未运行"; fi
     else
         CLIENT_STATUS="未安装"
     fi
-    if [ -f "/usr/bin/wireproxy" ]; then
+    if [[ -f "/usr/bin/wireproxy" ]]; then
         if pgrep -x "wireproxy" > /dev/null; then WIREPROXY_STATUS="运行中"; else WIREPROXY_STATUS="已安装但未运行"; fi
     else
         WIREPROXY_STATUS="未安装"
@@ -249,7 +252,7 @@ check_status() {
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"
     elif wg show warp >/dev/null 2>&1; then
         local warp_conf_content=""
-        if [ -f /etc/wireguard/warp.conf ]; then
+        if [[ -f /etc/wireguard/warp.conf ]]; then
             # 一次读取配置文件，减少 I/O
             warp_conf_content=$(cat /etc/wireguard/warp.conf 2>/dev/null) || warp_conf_content=""
             local ipv4_active=0
@@ -283,6 +286,7 @@ check_status() {
         conformity_status="与预期配置不符"
         if [[ "$expected_stack" == "双栈 (Dual-Stack)" ]]; then needs_reconnect=1; fi
     fi
+    return
 }
 
 # ============================================================
