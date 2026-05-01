@@ -129,12 +129,12 @@ get_warp_ip_details() {
     # 使用上游自建 IP API (v3.2.0)，一次请求获取 WARP 状态、IP、国家和 ISP
     if grep -q 'socks5' <<< "$extra_curl_opts" 2>/dev/null; then
         # SOCKS5 代理模式：先获取 IP，再查询详情
-        warp_ip=$(curl -s -A a --retry 2 "$extra_curl_opts" "https://api-ipv${ip_version}.ip.sb/ip" 2>/dev/null)
+        warp_ip=$(curl -s -A a --retry 2 --connect-timeout 3 --max-time 5 "$extra_curl_opts" "https://api-ipv${ip_version}.ip.sb/ip" 2>/dev/null)
         if [[ -z "$warp_ip" ]]; then
             echo "N/A"
             return
         fi
-        ip_json=$(curl -s --retry 2 --max-time 10 "https://ip.cloudflare.nyc.mn/${warp_ip}?lang=zh-CN" 2>/dev/null)
+        ip_json=$(curl -s --retry 2 --connect-timeout 3 --max-time 5 "https://ip.cloudflare.nyc.mn/${warp_ip}?lang=zh-CN" 2>/dev/null)
         # 检查是否为 Cloudflare IP
         if echo "$ip_json" | grep -qi '"isp".*Cloudflare'; then
             warp_status="on"
@@ -144,7 +144,7 @@ get_warp_ip_details() {
         fi
     else
         # 直连或 --interface 模式
-        ip_json=$(curl -s --retry 2 --max-time 10 "$extra_curl_opts" -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
+        ip_json=$(curl -s --retry 2 --connect-timeout 3 --max-time 5 "$extra_curl_opts" -${ip_version} "https://ip.cloudflare.nyc.mn?lang=zh-CN" 2>/dev/null)
         if [[ -z "$ip_json" ]]; then
             echo "N/A"
             return
@@ -231,7 +231,7 @@ check_status() {
     [[ "$arch_info" == "x86_64" ]] && arch_info="amd64"
     virt_info=$(systemd-detect-virt 2>/dev/null || echo "N/A")
     IPV4="N/A"; IPV6="N/A"; extra_opts=""; expected_stack="-"; actual_stack="已断开 (Disconnected)";
-    WORK_MODE=""; CLIENT_STATUS=""; WIREPROXY_STATUS=""; RECONNECT_CMD=""; needs_reconnect=0;
+    WORK_MODE=""; CLIENT_STATUS=""; WIREPROXY_STATUS=""; RECONNECT_CMD=""; HARD_RECONNECT_CMD=""; needs_reconnect=0;
     if [[ -x "$(type -p warp-cli)" ]]; then
         if pgrep -x "warp-svc" > /dev/null; then CLIENT_STATUS="运行中"; else CLIENT_STATUS="已安装但未运行"; fi
     else
@@ -245,11 +245,13 @@ check_status() {
     if [[ "$CLIENT_STATUS" == "运行中" ]]; then
         local port=$(ss -nltp | grep -m1 '"warp-svc"' | awk '{print $4}' | awk -F: '{print $NF}')
         if [[ -n "$port" ]]; then extra_opts="--socks5 127.0.0.1:$port"; fi
-        expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp r"
+        local client_mode=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{print $2}')
+        if [[ "$client_mode" == "WarpProxy" ]]; then WORK_MODE="代理模式 (Proxy)"; else WORK_MODE="全局模式 (Global)"; fi
+        expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp r"; HARD_RECONNECT_CMD="/usr/bin/warp r"
     elif [[ "$WIREPROXY_STATUS" == "运行中" ]]; then
         local port=$(ss -nltp | grep -m1 '"wireproxy"' | awk '{print $4}' | awk -F: '{print $NF}')
         if [[ -n "$port" ]]; then extra_opts="--socks5 127.0.0.1:$port"; fi
-        expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"
+        expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"; HARD_RECONNECT_CMD="/usr/bin/warp y"
     elif wg show warp >/dev/null 2>&1; then
         local warp_conf_content=""
         if [[ -f /etc/wireguard/warp.conf ]]; then
@@ -264,7 +266,7 @@ check_status() {
             if [[ $ipv4_active -eq 0 && $ipv6_active -gt 0 ]]; then expected_stack="仅 IPv6 (IPv6-Only)"; fi
         fi
         if echo "$warp_conf_content" | grep -q '^Table'; then WORK_MODE="非全局"; extra_opts="--interface warp"; else WORK_MODE="全局"; fi
-        RECONNECT_CMD="/usr/bin/warp n"
+        RECONNECT_CMD="/usr/bin/warp n"; HARD_RECONNECT_CMD="/usr/bin/warp o"
     fi
     if [[ -n "$extra_opts" || "$WORK_MODE" == "全局" ]]; then
         # 并行获取 IPv4 和 IPv6 信息
@@ -334,7 +336,7 @@ attempt_reconnect() {
 main() {
     declare os_info kernel_info arch_info virt_info IPV4 IPV6
     declare expected_stack actual_stack conformity_status WORK_MODE CLIENT_STATUS WIREPROXY_STATUS
-    declare RECONNECT_CMD needs_reconnect
+    declare RECONNECT_CMD HARD_RECONNECT_CMD needs_reconnect
     echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
     log_and_echo "========================================================================"
     log_and_echo " WARP Status Report & Auto-Heal  v${VERSION}"
@@ -389,9 +391,6 @@ main() {
         if [[ $soft_success -eq 0 ]]; then
             log_and_echo "------------------------------------------------------------------------"
             log_and_echo " [阶段 2/2] 软重连失败，Fallback 到硬重连 (warp o)..."
-            
-            # 将重连命令末尾的参数 (n/r/y) 改为 o
-            local HARD_RECONNECT_CMD="${RECONNECT_CMD% [nry]} o"
             
             for i in $(seq 1 $MAX_RETRIES); do
                 log_and_echo "   [尝试 $i/$MAX_RETRIES]"
