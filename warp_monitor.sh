@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 LOG_FILE="/var/log/warp_monitor.log"
 LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
@@ -34,7 +34,7 @@ show_help() {
 
 show_version() {
     echo "WARP Monitor v${VERSION}"
-    echo "上游依赖: fscarmen/warp-sh v3.2.2"
+    echo "上游依赖: fscarmen/warp-sh v3.2.4"
     return
 }
 
