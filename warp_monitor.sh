@@ -245,8 +245,14 @@ check_status() {
     if [[ "$CLIENT_STATUS" == "运行中" ]]; then
         local port=$(ss -nltp | grep -m1 '"warp-svc"' | awk '{print $4}' | awk -F: '{print $NF}')
         if [[ -n "$port" ]]; then extra_opts="--socks5 127.0.0.1:$port"; fi
-        local client_mode=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{print $2}')
-        if [[ "$client_mode" == "WarpProxy" ]]; then WORK_MODE="代理模式 (Proxy)"; else WORK_MODE="全局模式 (Global)"; fi
+        local client_mode=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{print $2}' || echo "")
+        if [[ "$client_mode" == "WarpProxy" ]]; then 
+            WORK_MODE="代理模式 (Proxy)"
+        elif [[ "$client_mode" == "Warp" ]]; then
+            WORK_MODE="全局模式 (Global)"
+        else
+            WORK_MODE="未知模式"
+        fi
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp r"; HARD_RECONNECT_CMD="/usr/bin/warp r"
     elif [[ "$WIREPROXY_STATUS" == "运行中" ]]; then
         local port=$(ss -nltp | grep -m1 '"wireproxy"' | awk '{print $4}' | awk -F: '{print $NF}')
@@ -411,6 +417,7 @@ main() {
                 fi
                 if [[ $i -eq $MAX_RETRIES ]]; then
                     log_and_echo " 最终诊断: 所有重连尝试均失败 (软重连 $MAX_RETRIES 次 + 硬重连 $MAX_RETRIES 次)。"
+                    log_and_echo " 提示: 当前脚本 v${VERSION}, 上游依赖 fscarmen/warp-sh v3.2.4"
                     log_and_echo " 建议: 请手动检查 WARP 服务状态或网络连接。"
                 fi
             done
