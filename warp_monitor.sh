@@ -204,11 +204,15 @@ get_warp_ip_details() {
 
 # 预检 + 查询封装 (供并行调用)
 # 参数: $1=4|6  $2=模式  $3=socks5 端口
+# 注意: wg 非全局模式跳过 ping 预检——该模式 IPv6 无默认路由, 只能经 --interface warp
+#       绑定访问 (curl 会正确绑定 warp 接口), 预检默认路由反而误判 IPv6 不可达。
 check_ip() {
     local v="$1" mode="$2" port="${3:-}"
-    if ! ping_precheck "$v"; then
-        echo "N/A"
-        return
+    if [[ "$mode" != "wg" ]]; then
+        if ! ping_precheck "$v"; then
+            echo "N/A"
+            return
+        fi
     fi
     get_warp_ip_details "$v" "$mode" "$port"
 }
