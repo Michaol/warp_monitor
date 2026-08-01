@@ -15,6 +15,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v6
+        uses: SonarSource/sonarqube-scan-action@v8
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          # 跳过 JRE 自动配置: GitHub runner 自带 JDK, 无需 JRE provisioning
+          # (修复 api.sonarcloud.io/analysis/jres 返回 403 导致的扫描失败)
+          args: -Dsonar.scanner.skipJreProvisioning=true
