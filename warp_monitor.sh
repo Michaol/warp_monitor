@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 # ============ 可配置参数 (配置文件可覆盖) ============
 LOG_FILE="/var/log/warp_monitor.log"
@@ -258,14 +258,16 @@ EOF
 
 setup_cron_job() {
     local cron_comment="# WARP_MONITOR_CRON"
-    local cron_job="0 * * * * timeout 20m ${SCRIPT_PATH} ${cron_comment}"
+    # SCRIPT_PATH 加引号, 防止路径含空格时 cron 分词 (vixie cron 支持)
+    local cron_job="0 * * * * timeout 20m \"${SCRIPT_PATH}\" ${cron_comment}"
 
     log_and_echo "------------------------------------------------------------------------"
     log_and_echo " 定时任务配置检查:"
 
     if crontab -l 2>/dev/null | grep -qF "$cron_comment"; then
         log_and_echo "   [INFO] 定时监控任务已存在, 跳过设置。"
-        local existing_job=$(crontab -l | grep -F "$cron_comment")
+        local existing_job
+        existing_job=$(crontab -l 2>/dev/null | grep -F "$cron_comment" || true)
         local schedule=$(echo "$existing_job" | awk '{print $1, $2, $3, $4, $5}')
         local human_readable_schedule=""
         case "$schedule" in
@@ -603,7 +605,7 @@ main() {
         local soft_success=0
         for i in $(seq 1 $MAX_RETRIES); do
             log_and_echo "   [尝试 $i/$MAX_RETRIES]"
-            attempt_reconnect "soft" "$RECONNECT_CMD"
+            attempt_reconnect "soft" "$RECONNECT_CMD" || true
             log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
             sleep "$RECONNECT_WAIT_TIME"
             check_status
@@ -628,7 +630,7 @@ main() {
                 # 判断 wg 接口当前是否存活
                 local wg_alive=0
                 if wg show warp >/dev/null 2>&1; then wg_alive=1; fi
-                attempt_reconnect "hard" "$HARD_RECONNECT_CMD" "$wg_alive"
+                attempt_reconnect "hard" "$HARD_RECONNECT_CMD" "$wg_alive" || true
                 log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
                 sleep "$RECONNECT_WAIT_TIME"
                 check_status

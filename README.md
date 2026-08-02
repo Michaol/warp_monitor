@@ -6,15 +6,23 @@
 
 ## 📝 更新日志
 
+### v1.4.2 (2026-08-02)
+
+**第三轮代码审查修复（set -e 健壮性）**
+
+- **修复 attempt_reconnect 返回非零时 set -e 崩脚本**：v1.4.1 修复退出码后引入的回归——重连命令失败会导致脚本直接退出，跳过复检和重试。调用处加 `|| true`
+- **修复 existing_job grep -F 无匹配时崩溃**：crontab 竞态下 `grep -F` 无匹配触发 set -e，加 `|| true` 兜底
+- **cron 任务路径加引号**：SCRIPT_PATH 含空格时防止 cron 分词
+
+<details>
+<summary>历史版本</summary>
+
 ### v1.4.1 (2026-08-02)
 
 **代码审查修复**
 
 - **修复 socks5_port 赋值 set -e 崩溃**：`ss | grep | awk` 无匹配时脚本静默退出，加 `|| true` 兜底（影响 warp-cli/wireproxy 模式）
 - **修复重连退出码误报**：`if ! $cmd; then cmd_status=$?` 中 `!` 反转后 `$?` 恒为 0，改为 `if $cmd; then :; else cmd_status=$?`，诊断日志反映真实失败
-
-<details>
-<summary>历史版本</summary>
 
 ### v1.4.0 (2026-08-02)
 
