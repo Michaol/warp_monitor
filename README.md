@@ -6,6 +6,16 @@
 
 ## 📝 更新日志
 
+### v1.4.1 (2026-08-02)
+
+**代码审查修复**
+
+- **修复 socks5_port 赋值 set -e 崩溃**：`ss | grep | awk` 无匹配时脚本静默退出，加 `|| true` 兜底（影响 warp-cli/wireproxy 模式）
+- **修复重连退出码误报**：`if ! $cmd; then cmd_status=$?` 中 `!` 反转后 `$?` 恒为 0，改为 `if $cmd; then :; else cmd_status=$?`，诊断日志反映真实失败
+
+<details>
+<summary>历史版本</summary>
+
 ### v1.4.0 (2026-08-02)
 
 **新增 warp-go 兼容支持**
@@ -18,9 +28,6 @@
 - **第二信源**：warp-go 无内核 wg 握手，改用进程存活 + 接口存在作第二信源，防止 API 不可用时误判
 - **接口消失可重建**：warp-go 接口掉线但配置存在时，仍触发 `warp-go o` 重连
 - 不影响已工作的 wg-quick 路径（32/32 测试用例全过）
-
-<details>
-<summary>历史版本</summary>
 
 ### v1.3.0 (2026-08-01)
 

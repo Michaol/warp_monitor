@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 # ============ 可配置参数 (配置文件可覆盖) ============
 LOG_FILE="/var/log/warp_monitor.log"
@@ -359,7 +359,7 @@ check_status() {
 
     # ---- 模式识别与重连命令赋值 (与接口是否存活无关) ----
     if [[ "$CLIENT_STATUS" == "运行中" ]]; then
-        socks5_port=$(ss -nltp 2>/dev/null | grep -m1 '"warp-svc"' | awk '{print $4}' | awk -F: '{print $NF}')
+        socks5_port=$(ss -nltp 2>/dev/null | grep -m1 '"warp-svc"' | awk '{print $4}' | awk -F: '{print $NF}') || true
         mode="socks5"
         local client_mode
         client_mode=$(warp-cli --accept-tos settings 2>/dev/null | awk '/Mode:/{print $2}' || echo "")
@@ -372,7 +372,7 @@ check_status() {
         fi
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp r"; HARD_RECONNECT_CMD="/usr/bin/warp r"
     elif [[ "$WIREPROXY_STATUS" == "运行中" ]]; then
-        socks5_port=$(ss -nltp 2>/dev/null | grep -m1 '"wireproxy"' | awk '{print $4}' | awk -F: '{print $NF}')
+        socks5_port=$(ss -nltp 2>/dev/null | grep -m1 '"wireproxy"' | awk '{print $4}' | awk -F: '{print $NF}') || true
         mode="socks5"
         expected_stack="双栈 (Dual-Stack)"; RECONNECT_CMD="/usr/bin/warp y"; HARD_RECONNECT_CMD="/usr/bin/warp y"
     elif wg show warp >/dev/null 2>&1; then
@@ -518,7 +518,12 @@ attempt_reconnect() {
         "soft")
             log_and_echo "   [重连方法] 软重连 (warp n)"
             log_and_echo "   [执行命令] $cmd"
-            if ! $cmd >> "$LOG_FILE" 2>&1; then cmd_status=$?; fi
+            # 注意: 不能用 `if ! cmd; then cmd_status=$?` —— `!` 反转后 $? 恒为 0
+            if $cmd >> "$LOG_FILE" 2>&1; then
+                cmd_status=0
+            else
+                cmd_status=$?
+            fi
             ;;
         "hard")
             if [[ "$is_connected" -eq 1 ]]; then
@@ -526,7 +531,11 @@ attempt_reconnect() {
                 log_and_echo "   [重连方法] 硬重连 (warp o - 先关闭再开启)"
                 log_and_echo "   [执行命令] $cmd (关闭)"
                 local close_status=0
-                if ! $cmd >> "$LOG_FILE" 2>&1; then close_status=$?; fi
+                if $cmd >> "$LOG_FILE" 2>&1; then
+                    close_status=0
+                else
+                    close_status=$?
+                fi
                 if [[ $close_status -eq 0 ]]; then
                     log_and_echo "   [状态] 接口已关闭，等待 ${HARD_RECONNECT_DELAY} 秒..."
                     sleep "$HARD_RECONNECT_DELAY"
@@ -538,7 +547,11 @@ attempt_reconnect() {
             fi
             # 统一执行开启
             log_and_echo "   [执行命令] $cmd (开启)"
-            if ! $cmd >> "$LOG_FILE" 2>&1; then cmd_status=$?; fi
+            if $cmd >> "$LOG_FILE" 2>&1; then
+                cmd_status=0
+            else
+                cmd_status=$?
+            fi
             ;;
     esac
     return $cmd_status
