@@ -6,6 +6,19 @@
 
 ## 📝 更新日志
 
+### v1.4.0 (2026-08-02)
+
+**新增 warp-go 兼容支持**
+
+- **warp-go 模式识别**：检测 `/opt/warp-go/warp-go` 二进制 + `pgrep warp-go` + `ip link show WARP`，识别 Go 用户态实现
+- **接口大小写**：warp-go 接口名为大写 `WARP`（非小写 `warp`），curl 检测改用 `--interface WARP`
+- **配置路径**：warp-go 配置在 `/opt/warp-go/warp.conf`（非 `/etc/wireguard/warp.conf`）
+- **重连命令**：warp-go 用 `/usr/bin/warp-go o`（非 `warp n/o`）
+- **非全局判定**：warp-go 用 `#AllowedIPs` 注释标记（非 `Table = off`），`read_expected_stack` 兼容注释格式
+- **第二信源**：warp-go 无内核 wg 握手，改用进程存活 + 接口存在作第二信源，防止 API 不可用时误判
+- **接口消失可重建**：warp-go 接口掉线但配置存在时，仍触发 `warp-go o` 重连
+- 不影响已工作的 wg-quick 路径（32/32 测试用例全过）
+
 ### v1.3.0 (2026-08-01)
 
 **全面修复检测可靠性 + 兼容上游 v3.1.8+**

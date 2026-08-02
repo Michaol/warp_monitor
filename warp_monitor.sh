@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # ============ 可配置参数 (配置文件可覆盖) ============
 LOG_FILE="/var/log/warp_monitor.log"
@@ -9,7 +9,10 @@ LOGROTATE_CONF="/etc/logrotate.d/warp_monitor"
 MAX_RETRIES=2
 RECONNECT_WAIT_TIME=15
 HARD_RECONNECT_DELAY=3
-WARP_CONF="/etc/wireguard/warp.conf"
+WARP_CONF="/etc/wireguard/warp.conf"              # wg-quick 路径 (fscarmen warp)
+WARPGO_CONF="/opt/warp-go/warp.conf"              # warp-go 路径
+WARPGO_BIN="/opt/warp-go/warp-go"                 # warp-go 二进制
+WARPGO_IFACE="WARP"                               # warp-go 接口名 (大写, 与上游一致)
 WARP_API="https://ip.cloudflare.nyc.mn"         # 上游默认 HTTP, 此处用 HTTPS+-k 兼顾安全与兼容
 PING_V4="162.159.192.1"                         # Cloudflare engage IPv4
 PING_V6="2606:4700:d0::a29f:c001"               # Cloudflare engage IPv6
@@ -43,7 +46,7 @@ show_help() {
 
 show_version() {
     echo "WARP Monitor v${VERSION}"
-    echo "上游依赖: fscarmen/warp-sh v3.2.6 (兼容 v3.1.8+)"
+    echo "上游依赖: fscarmen/warp-sh v3.2.6 (兼容 v3.1.8+, 含 warp-go)"
     return
 }
 
@@ -147,6 +150,7 @@ ping_precheck() {
 
 # wg 握手新鲜度: 最近 HANDSHAKE_MAX_AGE 秒内有握手即视为连接存活
 # (检测 API 不可用时的第二信源, 防止误判"连接丢失"触发无效重连)
+# 仅适用 wg-quick 路径; warp-go 无内核 wg 接口, 用 warpgo_alive 替代。
 wg_handshake_fresh() {
     local handshake now
     handshake=$(wg show warp latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
@@ -155,8 +159,14 @@ wg_handshake_fresh() {
     [[ $((now - handshake)) -le $HANDSHAKE_MAX_AGE ]]
 }
 
+# warp-go 连接存活判定 (第二信源): 进程在跑 + 接口存在
+# warp-go 是用户态 Go 实现, 无内核 wg 握手可读, 故用进程/接口存活作信源。
+warpgo_alive() {
+    pgrep -x "warp-go" >/dev/null 2>&1 && ip link show "$WARPGO_IFACE" >/dev/null 2>&1
+}
+
 # 查询指定栈 (4/6) 的 WARP 状态。
-# 参数: $1=4|6  $2=模式 (wg|global|socks5)  $3=socks5 端口 (仅 socks5 模式)
+# 参数: $1=4|6  $2=模式 (wg|warpgo|global|socks5)  $3=socks5 端口 (仅 socks5 模式)
 # 输出: "IP 国家 ISP" (warp=on/plus) 或 "N/A"
 get_warp_ip_details() {
     local ip_version="$1" mode="$2" port="${3:-}"
@@ -178,9 +188,11 @@ get_warp_ip_details() {
             return
         fi
     else
-        # 直连 / --interface warp 模式
+        # 直连 / --interface 模式: wg-quick 用小写 warp, warp-go 用大写 WARP
         if [[ "$mode" == "wg" ]]; then
             curl_base=(-s --retry 2 -k -m 2 --interface warp)
+        elif [[ "$mode" == "warpgo" ]]; then
+            curl_base=(-s --retry 2 -k -m 2 --interface "$WARPGO_IFACE")
         else
             curl_base=(-s --retry 2 -k -m 2)
         fi
@@ -204,11 +216,11 @@ get_warp_ip_details() {
 
 # 预检 + 查询封装 (供并行调用)
 # 参数: $1=4|6  $2=模式  $3=socks5 端口
-# 注意: wg 非全局模式跳过 ping 预检——该模式 IPv6 无默认路由, 只能经 --interface warp
-#       绑定访问 (curl 会正确绑定 warp 接口), 预检默认路由反而误判 IPv6 不可达。
+# 注意: wg/warpgo 非全局模式跳过 ping 预检——该模式 IPv6 无默认路由, 只能经
+#       --interface 绑定访问, 预检默认路由反而误判 IPv6 不可达。
 check_ip() {
     local v="$1" mode="$2" port="${3:-}"
-    if [[ "$mode" != "wg" ]]; then
+    if [[ "$mode" != "wg" && "$mode" != "warpgo" ]]; then
         if ! ping_precheck "$v"; then
             echo "N/A"
             return
@@ -295,12 +307,15 @@ setup_cron_job() {
 }
 
 # 从 warp.conf 读取预期栈 (与上游兼容: 分行或同行 AllowedIPs 均可)
+# wg-quick: AllowedIPs 未注释 (Table=off 标记非全局)
+# warp-go:  全局=未注释, 非全局=#AllowedIPs (注释)。两种均视为"配置了该栈"
 # 输出: "双栈 (Dual-Stack)" / "仅 IPv4 (IPv4-Only)" / "仅 IPv6 (IPv6-Only)" / "N/A"
 read_expected_stack() {
     local conf_content="$1"
     local ipv4_active=0 ipv6_active=0
-    if echo "$conf_content" | grep -qE '^[[:space:]]*AllowedIPs[^#]*0\.0\.0\.0/0' 2>/dev/null; then ipv4_active=1; fi
-    if echo "$conf_content" | grep -qE '^[[:space:]]*AllowedIPs[^#]*::/0' 2>/dev/null; then ipv6_active=1; fi
+    # 行首允许 [[:space:]]* 和可选的 # (warp-go 非全局注释)
+    if echo "$conf_content" | grep -qE '^[[:space:]]*#?[[:space:]]*AllowedIPs[^#]*0\.0\.0\.0/0' 2>/dev/null; then ipv4_active=1; fi
+    if echo "$conf_content" | grep -qE '^[[:space:]]*#?[[:space:]]*AllowedIPs[^#]*::/0' 2>/dev/null; then ipv6_active=1; fi
     if [[ $ipv4_active -eq 1 && $ipv6_active -eq 1 ]]; then
         echo "双栈 (Dual-Stack)"
     elif [[ $ipv4_active -eq 1 ]]; then
@@ -320,7 +335,7 @@ check_status() {
     virt_info=$(systemd-detect-virt 2>/dev/null || echo "N/A")
     IPV4="N/A"; IPV6="N/A"
     expected_stack="N/A"; actual_stack="已断开 (Disconnected)"
-    WORK_MODE=""; CLIENT_STATUS=""; WIREPROXY_STATUS=""
+    WORK_MODE=""; CLIENT_STATUS=""; WIREPROXY_STATUS=""; WARPGO_STATUS=""
     RECONNECT_CMD=""; HARD_RECONNECT_CMD=""
     needs_reconnect=0; detection_note=""
     local mode="" socks5_port=""
@@ -334,6 +349,12 @@ check_status() {
         if pgrep -x "wireproxy" > /dev/null; then WIREPROXY_STATUS="运行中"; else WIREPROXY_STATUS="已安装但未运行"; fi
     else
         WIREPROXY_STATUS="未安装"
+    fi
+    # warp-go 识别: 二进制存在 + 进程在跑
+    if [[ -x "$WARPGO_BIN" ]] || [[ -L "/usr/bin/warp-go" ]]; then
+        if pgrep -x "warp-go" > /dev/null; then WARPGO_STATUS="运行中"; else WARPGO_STATUS="已安装但未运行"; fi
+    else
+        WARPGO_STATUS="未安装"
     fi
 
     # ---- 模式识别与重连命令赋值 (与接口是否存活无关) ----
@@ -367,6 +388,29 @@ check_status() {
             WORK_MODE="全局"
         fi
         RECONNECT_CMD="/usr/bin/warp n"; HARD_RECONNECT_CMD="/usr/bin/warp o"
+    elif [[ "$WARPGO_STATUS" == "运行中" ]] && ip link show "$WARPGO_IFACE" >/dev/null 2>&1; then
+        # warp-go 模式: 用户态 Go TUN, 接口名大写 WARP
+        mode="warpgo"
+        local warpgo_conf_content=""
+        if [[ -f "$WARPGO_CONF" ]]; then
+            warpgo_conf_content=$(cat "$WARPGO_CONF" 2>/dev/null) || warpgo_conf_content=""
+        fi
+        expected_stack=$(read_expected_stack "$warpgo_conf_content")
+        # warp-go 非全局: AllowedIPs 被注释 (#AllowedIPs); 全局: 未注释
+        if echo "$warpgo_conf_content" | grep -qE '^[[:space:]]*#AllowedIPs' 2>/dev/null; then
+            WORK_MODE="非全局"
+        else
+            WORK_MODE="全局"
+        fi
+        RECONNECT_CMD="/usr/bin/warp-go o"; HARD_RECONNECT_CMD="/usr/bin/warp-go o"
+    elif [[ -f "$WARPGO_CONF" ]]; then
+        # warp-go 接口未激活但配置存在 (掉线/未拉起) → 仍可重连重建
+        mode="down_warpgo"
+        local warpgo_conf_content=""
+        warpgo_conf_content=$(cat "$WARPGO_CONF" 2>/dev/null) || warpgo_conf_content=""
+        expected_stack=$(read_expected_stack "$warpgo_conf_content")
+        RECONNECT_CMD="/usr/bin/warp-go o"; HARD_RECONNECT_CMD="/usr/bin/warp-go o"
+        detection_note="WARP-Go 接口未激活"
     elif [[ -f "$WARP_CONF" ]]; then
         # WARP 接口不存在但配置存在 (掉线/未拉起) → 仍可重连重建
         mode="down"
@@ -387,7 +431,15 @@ check_status() {
             IPV4=$(cat "$tmp4" 2>/dev/null || echo "N/A")
             IPV6=$(cat "$tmp6" 2>/dev/null || echo "N/A")
             ;;
-        down)
+        warpgo)
+            check_ip 4 "warpgo" > "$tmp4" &
+            check_ip 6 "warpgo" > "$tmp6" &
+            wait
+            IPV4=$(cat "$tmp4" 2>/dev/null || echo "N/A")
+            IPV6=$(cat "$tmp6" 2>/dev/null || echo "N/A")
+            ;;
+        down|down_warpgo)
+            # 接口未激活: 直连检测 (无 --interface 绑定)
             check_ip 4 "global" > "$tmp4" &
             check_ip 6 "global" > "$tmp6" &
             wait
@@ -427,9 +479,12 @@ check_status() {
     esac
 
     if [[ $ipv4_ok -eq 0 && $ipv6_ok -eq 0 ]]; then
-        # 检测 API 完全不可用 (非 WARP 故障): 以 wg 握手作为第二信源
+        # 检测 API 完全不可用 (非 WARP 故障): 以第二信源判定, 防止误触发重连
+        # wg-quick 用握手新鲜度; warp-go 用进程/接口存活
         if [[ "$mode" == "wg" ]] && wg_handshake_fresh; then
             conformity_status="符合预期配置 (握手正常, 检测 API 暂不可用)"
+        elif [[ "$mode" == "warpgo" ]] && warpgo_alive; then
+            conformity_status="符合预期配置 (进程存活, 检测 API 暂不可用)"
         else
             conformity_status="连接丢失"
             needs_reconnect=1
@@ -491,7 +546,7 @@ attempt_reconnect() {
 
 main() {
     declare os_info kernel_info arch_info virt_info IPV4 IPV6
-    declare expected_stack actual_stack conformity_status WORK_MODE CLIENT_STATUS WIREPROXY_STATUS
+    declare expected_stack actual_stack conformity_status WORK_MODE CLIENT_STATUS WIREPROXY_STATUS WARPGO_STATUS
     declare RECONNECT_CMD HARD_RECONNECT_CMD needs_reconnect detection_note
     echo "--- $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
     log_and_echo "========================================================================"
@@ -510,10 +565,16 @@ main() {
         log_and_echo "   WARP 网络接口已开启"
         if [[ -n "$WORK_MODE" ]]; then log_and_echo "   工作模式: $WORK_MODE"; fi
     else
-        if wg show warp >/dev/null 2>&1; then log_and_echo "   WARP 网络接口已断开"; fi
+        # 接口已断开: 显示哪个后端断开 (wg-quick 或 warp-go)
+        if wg show warp >/dev/null 2>&1; then
+            log_and_echo "   WARP 网络接口已断开"
+        elif [[ "$WARPGO_STATUS" == "运行中" ]] && ip link show "$WARPGO_IFACE" >/dev/null 2>&1; then
+            log_and_echo "   WARP-Go 网络接口已断开"
+        fi
         if [[ -n "$detection_note" ]]; then log_and_echo "   备注: $detection_note"; fi
     fi
     log_and_echo "   Client: $CLIENT_STATUS"; log_and_echo "   WireProxy: $WIREPROXY_STATUS"
+    [[ "$WARPGO_STATUS" != "未安装" ]] && log_and_echo "   WARP-Go: $WARPGO_STATUS"
     log_and_echo "------------------------------------------------------------------------"
     log_and_echo " 配置符合性分析:"
     log_and_echo "   预期配置: $expected_stack"
