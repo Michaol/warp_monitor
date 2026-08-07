@@ -15,9 +15,12 @@ mkdir -p "$STUB_DIR"
 
 # 参数: $1=name $2=接口存活(wg_up) $3=conf $4=api4 $5=api6 $6=handshake_delta
 #       $7=expected_msg $8=expected_reconnect $9=backend(wg|warpgo, 默认 wg)
+#       $10=trace4 (cdn-cgi/trace 探测 -4 返回的 warp 值, 默认空=探测失败)
+#       $11=trace6 (同上 -6)
 run_scenario() {
     local name="$1" wg_up="$2" conf="$3" api4="$4" api6="$5" handshake_delta="$6"
     local expected_msg="$7" expected_reconnect="${8:-0}" backend="${9:-wg}"
+    local trace4="${10:-}" trace6="${11:-}"
     local log="$TMP/log_$name"
     : > "$log"
     mkdir -p "$TMP/conf_$name" "$TMP/logrotate_$name"
@@ -81,9 +84,21 @@ EOF
 exit 0
 EOF
 
-    # curl: 按 -4/-6 返回对应多行 JSON (与真实 API 格式一致, awk 解析依赖换行)
+    # curl: URL 感知 stub。
+    #   - cdn-cgi/trace 请求 → 返回 trace 文本 (warp=$trace4/$trace6, 空=探测失败)
+    #   - 其他请求 → 按 -4/-6 返回 API JSON (与真实 API 格式一致, awk 解析依赖换行)
+    # 所有调用追加记录到 curl_calls 日志 (供 family-pin 断言)
     cat > "$STUB_DIR/curl" <<EOF
 #!/usr/bin/env bash
+echo "\$*" >> "$TMP/curl_calls_$name.log"
+if [[ "\$*" == *"cdn-cgi/trace"* ]]; then
+    if [[ "\$*" == *"-6"* ]]; then
+        [ -n "$trace6" ] && printf 'fl=1\nh=www.cloudflare.com\nwarp=$trace6\n'
+    else
+        [ -n "$trace4" ] && printf 'fl=1\nh=www.cloudflare.com\nwarp=$trace4\n'
+    fi
+    exit 0
+fi
 if [[ "\$*" == *"-6"* ]]; then
     cat <<'JSON'
 $api6
@@ -211,12 +226,46 @@ run_scenario "warpgo_dual_ok"      "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API4_ON" "
 run_scenario "warpgo_nonglobal_ok" "$WARPGO_UP" "$WARPGO_DUAL_NONGLOBAL_CONF" "$API4_ON" "$API6_ON" "$FRESH" "符合预期配置" 0 warpgo
 # warp-go 双栈 IPv6 掉 → 重连
 run_scenario "warpgo_v6_down"      "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API4_ON" "$API_EMPTY" "$OLD" "与预期配置不符" 1 warpgo
-# warp-go 进程存活+API 不可用 → 不误判 (进程作第二信源)
-run_scenario "warpgo_proc_fresh"  "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "进程存活" 0 warpgo
-# warp-go 进程死了+API 不可用 → 连接丢失重连
+# ★ 核心回归用例 (issue #6 复现): 隧道实际已死但进程/接口还在 (up-but-broken)
+#   v1.4.2 的 warpgo_alive 误判"进程存活"不重连; 修复后隧道探测失败 → 连接丢失 → 重连
+run_scenario "warpgo_api_down_tunnel_dead" "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "连接丢失" 1 warpgo "" ""
+# API 不可用但隧道探测 (cdn-cgi/trace warp=on) 健康 → 不误判重连
+run_scenario "warpgo_api_down_tunnel_live" "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "隧道连通" 0 warpgo "on" "on"
+# ERE 回归防护: trace 返回 warp=plus 也判活 (若 grep 漏 -E, 恒不匹配)
+run_scenario "warpgo_probe_plus"   "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "隧道连通" 0 warpgo "plus" "plus"
+# 族钉定: 仅 IPv4 配置, 探测只发 -4 请求 (不发 -6)
+run_scenario "warpgo_probe_family_pin" "$WARPGO_UP" "$WARPGO_V4_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "隧道连通" 0 warpgo "on" ""
+# up-but-broken 硬重连: 重连命令必须是 systemctl restart warp-go (warp-go o 在 up 态=停止!)
+run_scenario "warpgo_hard_up_but_broken" "$WARPGO_UP" "$WARPGO_DUAL_CONF" "$API4_OFF" "$API6_OFF" "$OLD" "连接丢失" 1 warpgo "" ""
+# 进程死了+API 不可用 → 连接丢失重连
 run_scenario "warpgo_proc_down"   "$WARPGO_DOWN" "$WARPGO_DUAL_CONF" "$API_EMPTY" "$API_EMPTY" "$FRESH" "连接丢失" 1 warpgo
 # warp-go 接口消失但配置存在 → down_warpgo, 重连重建
 run_scenario "warpgo_iface_down"  "$WARPGO_DOWN" "$WARPGO_DUAL_CONF" "$API4_OFF" "$API6_OFF" "$OLD" "连接丢失" 1 warpgo
+
+# ---- warp-go 专项断言 ----
+# 族钉定断言: trace 探测调用不得包含 -6 (预期栈仅 IPv4)
+trace_calls=$(grep "cdn-cgi/trace" "$TMP/curl_calls_warpgo_probe_family_pin.log" 2>/dev/null)
+if [[ -n "$trace_calls" ]] && ! grep -qE '(^| )-6( |$)' <<< "$trace_calls"; then
+    PASS=$((PASS+1)); echo "[PASS] warpgo_probe_family_pin: 探测仅用 -4 族"
+else
+    FAIL=$((FAIL+1)); echo "[FAIL] warpgo_probe_family_pin: 探测含 -6 请求: $trace_calls"
+fi
+
+# 重连命令语义断言: warpgo 运行态的重连命令必须是 systemctl restart, 不得是 warp-go o
+reconn_log="$TMP/log_warpgo_hard_up_but_broken"
+if grep -q "systemctl restart warp-go" "$reconn_log" 2>/dev/null && ! grep -q "/usr/bin/warp-go o" "$reconn_log" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "[PASS] warpgo_cmd_not_toggle: 运行态重连用 systemctl restart (非 warp-go o)"
+else
+    FAIL=$((FAIL+1)); echo "[FAIL] warpgo_cmd_not_toggle: 重连命令语义错误"
+fi
+
+# down_warpgo 路径断言: 重连命令保留 /usr/bin/warp-go o (上游 net() 全流程)
+down_log="$TMP/log_warpgo_iface_down"
+if grep -q "/usr/bin/warp-go o" "$down_log" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "[PASS] warpgo_down_keeps_o: down 态重连保留 warp-go o"
+else
+    FAIL=$((FAIL+1)); echo "[FAIL] warpgo_down_keeps_o: down 态重连命令被改变"
+fi
 
 echo "======================"
 echo "PASS=$PASS FAIL=$FAIL"

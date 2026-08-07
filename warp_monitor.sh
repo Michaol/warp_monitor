@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 # ============ 可配置参数 (配置文件可覆盖) ============
 LOG_FILE="/var/log/warp_monitor.log"
@@ -159,10 +159,37 @@ wg_handshake_fresh() {
     [[ $((now - handshake)) -le $HANDSHAKE_MAX_AGE ]]
 }
 
-# warp-go 连接存活判定 (第二信源): 进程在跑 + 接口存在
-# warp-go 是用户态 Go 实现, 无内核 wg 握手可读, 故用进程/接口存活作信源。
+# warp-go 宿主机级预筛: 进程在跑 + 接口存在。
+# 注意: 用户态 daemon 隧道死亡时进程/接口仍在, 此检查不能作为健康证据,
+#       仅作 warpgo_tunnel_live 的前置过滤 (省一次网络探测)。
 warpgo_alive() {
     pgrep -x "warp-go" >/dev/null 2>&1 && ip link show "$WARPGO_IFACE" >/dev/null 2>&1
+}
+
+# warp-go 隧道级连通性探测 (第二信源, 与 wg_handshake_fresh 对位):
+# 请求必须真正穿过隧道 (--interface 绑定) 且由 Cloudflare 边缘确认 warp=on/plus。
+# 端点选 www.cloudflare.com/cdn-cgi/trace (Cloudflare 主域名, 可靠性高于自建 API)。
+# 仅在 "检测 API 完全不可用" 兜底分支调用, 区分 'API 宕机' 与 '隧道死亡'。
+warpgo_tunnel_live() {
+    warpgo_alive || return 1
+    local families=() v
+    # 按期望栈钉族 (context7: -4/-6 强制协议族解析), 不在缺失族上浪费超时预算
+    case "$expected_stack" in
+        *"双栈"*) families=(4 6) ;;
+        *"IPv6"*) families=(6) ;;
+        *)        families=(4) ;;
+    esac
+    for v in "${families[@]}"; do
+        # -E 必需: BRE 下 ( | ) 是字面量, 不加则恒不匹配
+        # \r? 容忍 CRLF; --connect-timeout 限连接阶段(DNS+TCP+TLS);
+        # --retry 2 吸收瞬时抖动 (注意: -m 每次 retry 重置, 总预算 ≤15s)
+        if curl -s -k --retry 2 -m 5 --connect-timeout 3 -"$v" --interface "$WARPGO_IFACE" \
+             "https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null \
+           | grep -qE '^warp=(on|plus)\r?$'; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # 查询指定栈 (4/6) 的 WARP 状态。
@@ -404,7 +431,9 @@ check_status() {
         else
             WORK_MODE="全局"
         fi
-        RECONNECT_CMD="/usr/bin/warp-go o"; HARD_RECONNECT_CMD="/usr/bin/warp-go o"
+        # 运行态重连: warp-go o 在接口存活时是"停止"而非重连, restart 幂等安全
+        # (上游 net() 的重连原语同样是 systemctl restart warp-go)
+        RECONNECT_CMD="systemctl restart warp-go"; HARD_RECONNECT_CMD="systemctl restart warp-go"
     elif [[ -f "$WARPGO_CONF" ]]; then
         # warp-go 接口未激活但配置存在 (掉线/未拉起) → 仍可重连重建
         mode="down_warpgo"
@@ -481,12 +510,13 @@ check_status() {
     esac
 
     if [[ $ipv4_ok -eq 0 && $ipv6_ok -eq 0 ]]; then
-        # 检测 API 完全不可用 (非 WARP 故障): 以第二信源判定, 防止误触发重连
-        # wg-quick 用握手新鲜度; warp-go 用进程/接口存活
+        # 检测 API 完全不可用: 以隧道级第二信源判定, 区分 'API 宕机' 与 '隧道死亡'
+        # wg-quick: 内核握手新鲜度; warp-go: cdn-cgi/trace 隧道内探测
+        # (warp-go 进程隧道死时不退出, 进程/接口存活不能作为健康证据)
         if [[ "$mode" == "wg" ]] && wg_handshake_fresh; then
             conformity_status="符合预期配置 (握手正常, 检测 API 暂不可用)"
-        elif [[ "$mode" == "warpgo" ]] && warpgo_alive; then
-            conformity_status="符合预期配置 (进程存活, 检测 API 暂不可用)"
+        elif [[ "$mode" == "warpgo" ]] && warpgo_tunnel_live; then
+            conformity_status="符合预期配置 (隧道连通, 检测 API 暂不可用)"
         else
             conformity_status="连接丢失"
             needs_reconnect=1
@@ -528,7 +558,16 @@ attempt_reconnect() {
             fi
             ;;
         "hard")
-            if [[ "$is_connected" -eq 1 ]]; then
+            # systemctl restart 本身是"关再开"的原子操作, 无需先关再开两次
+            if [[ "$cmd" == *"restart"* ]]; then
+                log_and_echo "   [重连方法] 硬重连 ($cmd)"
+                log_and_echo "   [执行命令] $cmd"
+                if $cmd >> "$LOG_FILE" 2>&1; then
+                    cmd_status=0
+                else
+                    cmd_status=$?
+                fi
+            elif [[ "$is_connected" -eq 1 ]]; then
                 # 接口存活但 IP 异常 → 先关闭再开启
                 log_and_echo "   [重连方法] 硬重连 (warp o - 先关闭再开启)"
                 log_and_echo "   [执行命令] $cmd (关闭)"
@@ -627,10 +666,14 @@ main() {
 
             for i in $(seq 1 $MAX_RETRIES); do
                 log_and_echo "   [尝试 $i/$MAX_RETRIES]"
-                # 判断 wg 接口当前是否存活
-                local wg_alive=0
-                if wg show warp >/dev/null 2>&1; then wg_alive=1; fi
-                attempt_reconnect "hard" "$HARD_RECONNECT_CMD" "$wg_alive" || true
+                # 判断接口当前是否存活 (模式感知: wg-quick 内核接口 / warp-go 用户态 TUN)
+                local iface_alive=0
+                if wg show warp >/dev/null 2>&1; then
+                    iface_alive=1
+                elif [[ "$WARPGO_STATUS" == "运行中" ]] && ip link show "$WARPGO_IFACE" >/dev/null 2>&1; then
+                    iface_alive=1
+                fi
+                attempt_reconnect "hard" "$HARD_RECONNECT_CMD" "$iface_alive" || true
                 log_and_echo "   等待 ${RECONNECT_WAIT_TIME} 秒以待网络稳定..."
                 sleep "$RECONNECT_WAIT_TIME"
                 check_status

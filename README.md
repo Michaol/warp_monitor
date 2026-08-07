@@ -6,6 +6,19 @@
 
 ## 📝 更新日志
 
+### v1.4.3 (2026-08-07)
+
+**修复 warp-go 隧道死亡时不重连 ([issue #6](https://github.com/Michaol/warp_monitor/issues/6))**
+
+- **新增隧道级探测 `warpgo_tunnel_live()`**：`curl --interface WARP https://www.cloudflare.com/cdn-cgi/trace` 检 `warp=on/plus`，请求必须真正穿过隧道，替代不可靠的"进程存活"信源——warp-go 是常驻 daemon，隧道死亡时进程不退出、接口不消失，"进程活着"不等于"隧道健康"
+- **区分 'API 宕机' 与 '隧道死亡'**：探测通过 → 不误判重连；探测失败 → 判定连接丢失并触发重连
+- **修复硬重连接口判定**：`wg_alive` 改为模式感知（wg-quick 内核接口 / warp-go 用户态 TUN），修复 warp-go 下硬重连分支错误
+- **修复重连命令语义**：warp-go 运行态重连改用 `systemctl restart warp-go`（上游实锤：`warp-go o` 在接口存活时是"停止"而非重连）；down 态保留 `warp-go o`（上游 net() 全流程：轮询×5 + 配置回退）
+- 探测按预期栈钉协议族（仅 IPv4 机器不发 -6 请求）；测试套件新增 URL 感知 curl stub 与 8 个 warp-go 用例（43/43 全过）
+
+<details>
+<summary>历史版本</summary>
+
 ### v1.4.2 (2026-08-02)
 
 **第三轮代码审查修复（set -e 健壮性）**
@@ -13,9 +26,6 @@
 - **修复 attempt_reconnect 返回非零时 set -e 崩脚本**：v1.4.1 修复退出码后引入的回归——重连命令失败会导致脚本直接退出，跳过复检和重试。调用处加 `|| true`
 - **修复 existing_job grep -F 无匹配时崩溃**：crontab 竞态下 `grep -F` 无匹配触发 set -e，加 `|| true` 兜底
 - **cron 任务路径加引号**：SCRIPT_PATH 含空格时防止 cron 分词
-
-<details>
-<summary>历史版本</summary>
 
 ### v1.4.1 (2026-08-02)
 
